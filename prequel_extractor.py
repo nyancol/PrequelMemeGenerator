@@ -1,6 +1,14 @@
 from docopt import docopt
+
+from moviepy.editor import CompositeVideoClip, concatenate_videoclips
+from moviepy.editor import ImageClip, VideoFileClip, TextClip
+
+from wand.color import Color
+from wand.display import display
+from wand.drawing import Drawing
+from wand.image import Image
+
 import argparse
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
 
 version = 1.0
 help_msg = """PrequelExtractor
@@ -12,7 +20,7 @@ Options:
 --version       Show version.
 
 -p, --pattern   A pattern to find.
---to-jpg        Generates an image including the masked subtitles
+--to-jpg        Generates an image including the masked subtitles.
 """
 
 class Subtitle:
@@ -59,9 +67,6 @@ class Subtitle:
             self._index += 1
         return self._setters[self._index - 1]
 
-    def __str__(self):
-        return self._begin + ' ' + ''.join(self._lines)
-
 
 def decode(subtitles_source):
     subtitles = []
@@ -84,53 +89,88 @@ def search(subtitles, pattern):
     return res
 
 
-def replace_letters(subtitle, pattern):
-    substitute = '█'
-    text = list('\n'.join(subtitle))
-    text_squares = [' '] * len(text)
+def draw_letter(draw, x, y, char):
+    letter_width = 40
+    draw.text(x, y, char)
+    return draw
+
+
+def draw_scribble(draw, x, y, l, scribble):
+    letter_width = 40
+    x_offset = -5
+    y_offset = -40
+    scribble.save(filename="test.png")
+    draw.composite('add', x+x_offset, y+y_offset, 40, 50, scribble)
+    return draw
+
+
+def letter_width(c):
+    return 40
+
+
+def line_width(line):
+    return sum([letter_width(c) for c in line])
+
+
+def add_scribbles(clip, width, height, lines, pattern):
     pattern = list(pattern)
-    i = 0
-
-    while pattern:
-        if text[i].lower() not in ['\n', ' ', pattern[0]]:
-            text[i] = ' '
-            text_squares[i] = substitute
-        if text[i].lower() == pattern[0]:
-            del pattern[0]
-        i += 1
-
-    for j in range(i, len(text)):
-        text[i] = ' '
-        text_squares[i] = substitute
-
-    for i, c in enumerate(text):
-        if c == '\n':
-            text_squares[i] = c
-
-    return (''.join(text), ''.join(text_squares))
-
-
-def add_subtitle(clip, subtitle, pattern):
-    text, text_squares = replace_letters(subtitle, pattern)
-    text = (TextClip(text, fontsize=50,
-                         font="Arial", color="white", stroke_color="black", stroke_width=2)
-                 .margin(bottom=15, opacity=0)
-                 .set_position(("center","bottom")))
-    text_squares = (TextClip(text_squares, fontsize=50,
-                         font="Arial", color="black")
-                 .margin(bottom=15, opacity=0)
-                 .set_position(("center","bottom")))
-
-    return (CompositeVideoClip([clip, text])
+    with Drawing() as draw:
+        with Image(filename='./scribble_square.png') as scribble_img:
+            with Image(width=width, height=height, background=Color("NONE")) \
+                    as scribble_layer:
+                y = 3 * height // 4
+                for l in lines:
+                    x = width // 2 - line_width(l) // 2
+                    for c in l:
+                        if c == ' ':
+                            x += letter_width(c)
+                            continue
+                        elif pattern and pattern[0] != c.lower():
+                            draw = draw_scribble(draw, x, y, c, scribble_img)
+                        elif pattern and pattern[0] == c.lower():
+                            del pattern[0]
+                        elif not pattern:
+                            draw = draw_scribble(draw, x, y, c, scribble_img)
+                        x += letter_width(c)
+                    y = y + 100
+                draw(scribble_layer)
+                scribble_layer.save(filename="output2.png")
+    scribble_image = ImageClip("./output2.png")
+    return (CompositeVideoClip([clip, scribble_image])
             .set_duration(clip.duration))
 
+
+def add_subtitle(clip, width, height, lines):
+    with Drawing() as draw:
+        draw.font_size = 40
+        draw.fill_color = Color("white")
+        with Image(width=width, height=height, background=Color("NONE")) \
+                as text_layer:
+            y = 3 * height // 4
+            for l in lines:
+                x = width // 2 - line_width(l) // 2
+                for c in l:
+                    draw = draw_letter(draw, x, y, c)
+                    x += letter_width(c)
+                y = y + 100
+            draw(text_layer)
+            text_layer.save(filename="output.png")
+    subtitle_image = ImageClip("./output.png")
+    return (CompositeVideoClip([clip, subtitle_image])
+            .set_duration(clip.duration))
 
 
 def main():
     args = docopt(help_msg, version="Prequel Extractor " + str(version))
+    width, height = 1920, 816
 
-    sources = ['1.The.Phantom.Menace.srt', '2.Attack.of.the.Clones.srt', '3.Revenge.of.the.Sith.srt']
-    movies = ['1.The.Phantom.Menace.mp4', '2.Attack.of.the.Clones.mp4', '3.Revenge.of.the.Sith.mp4']
+    sources = ['1.The.Phantom.Menace.srt',
+               '2.Attack.of.the.Clones.srt',
+               '3.Revenge.of.the.Sith.srt']
+
+    movies = ['1.The.Phantom.Menace.mp4',
+              '2.Attack.of.the.Clones.mp4',
+              '3.Revenge.of.the.Sith.mp4']
 
     subtitles = [decode(s) for s in sources]
     res = [search(s, args['PATTERN']) for s in subtitles]
@@ -140,11 +180,10 @@ def main():
             for j, sub in enumerate(movie):
                 print(sub.begin, sub.end, sub.lines)
                 if args['--to-jpg']:
-                    clip = VideoFileClip(movies[i])
-                    current_clip = clip.subclip(sub.begin, sub.end)
-                    current_clip = add_subtitle(current_clip, sub.lines, args['PATTERN'])
-                    # current_clip.write_gif('test' + str(j) + '.gif', fps=15)
-                    current_clip.write_images_sequence('frame%03d.png', fps=3)
-            print()
+                    clip = VideoFileClip(movies[i]).subclip(sub.begin, sub.end)
+                    clip = add_subtitle(clip, width, height, sub.lines)
+                    clip = add_scribbles(clip, width, height, sub.lines, args['PATTERN'])
+                    # clip.write_gif('test' + str(j) + '.gif', fps=15)
+                    clip.write_images_sequence('frame-' + str(i) + '-' + str(j) + '-%03d.png', fps=1)
 
 main()

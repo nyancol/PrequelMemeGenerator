@@ -1,1 +1,1 @@
-# PrequelMemeGenerator
+# Prequel Memes Generator
